@@ -1,0 +1,175 @@
+# ============================================================================
+# Bug Bounty Automation Platform - STAGE 1 stack
+# Master/Worker/PostgreSQL/Redis on an internal bridge network.
+#
+# Security posture:
+#   * only the master publishes a port (API); worker has NO published ports
+#   * worker: cap_drop ALL, no-new-privileges, read-only rootfs, non-root,
+#     pids/mem limits, tmpfs scratch space
+#   * secrets injected via .env (never baked into images)
+# ============================================================================
+
+name: bb-platform
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    networks:
+      - internal
+    logging: *default-logging
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD}
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 256mb
+      --maxmemory-policy noeviction
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    networks:
+      - internal
+    logging: *default-logging
+
+  master:
+    build:
+      context: .
+      dockerfile: master/Dockerfile
+    image: bb-platform/master:stage1
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      MASTER_API_TOKEN: ${MASTER_API_TOKEN}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      WORKFLOWS_DIR: /app/workflows
+    ports:
+      - "${MASTER_PORT:-8080}:8080"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    networks:
+      - internal
+    logging: *default-logging
+
+  worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    image: bb-platform/worker:stage1
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      WORKER_ID: ${WORKER_ID:-worker-01}
+      WORKER_CAPABILITIES: ${WORKER_CAPABILITIES:-builtin.noop}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+      WORKER_RATE_RPS: ${WORKER_RATE_RPS:-10}
+      WORKER_ENV_PASSTHROUGH: ${WORKER_ENV_PASSTHROUGH:-}
+      SHODAN_API_KEY: ${SHODAN_API_KEY:-}
+      SECURITYTRAILS_API_KEY: ${SECURITYTRAILS_API_KEY:-}
+      CHAOS_API_KEY: ${CHAOS_API_KEY:-}
+      TASK_TIMEOUT_SECS: ${TASK_TIMEOUT_SECS:-600}
+      STALE_REQUEUE_SECS: ${STALE_REQUEUE_SECS:-900}
+      MAX_OUTPUT_BYTES: ${MAX_OUTPUT_BYTES:-1000000}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    # NO ports section: workers are unreachable from outside the compose net.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    pids_limit: 128
+    mem_limit: 1g
+    cpus: 2.0
+    networks:
+      - internal
+    logging: *default-logging
+
+  # Stage 5: MCP gateway for AI agents. stdio transport — an agent runs it
+  # attached (`docker compose run --rm mcp`); it is NOT a daemon.
+  mcp:
+    build:
+      context: .
+      dockerfile: mcp_server/Dockerfile
+    image: bb-platform/mcp:stage5
+    environment:
+      MASTER_URL: http://master:8080
+      MASTER_API_TOKEN: ${MASTER_API_TOKEN}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      - master
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    pids_limit: 32
+    mem_limit: 128m
+    networks:
+      - internal
+    logging: *default-logging
+
+volumes:
+  pgdata:
+  redisdata:
+
+networks:
+  internal:
+    driver: bridge

@@ -1,0 +1,37 @@
+# ============================================================================
+# Passive reconnaissance preset (reNgine "Passive Scan Engine" style).
+#
+# Zero intrusive contact: only passive subdomain sources, one DNS-resolution
+# pass to drop dead names, and an HTTP probe of the survivors. No port
+# scanning, crawling, or vulnerability exploitation. Safe default for
+# continuous monitoring of large programs and for newly added targets.
+#
+# Data flows through the findings store: each step consumes finding types
+# produced by its dependencies (declared via depends_on).
+# ============================================================================
+name: passive
+description: Passive enum -> DNS filter -> live-host probe only. No active probing.
+version: 1
+
+defaults:
+  max_attempts: 3
+
+steps:
+  - name: subdomain_subfinder
+    tool: subfinder
+    fanout: per_target
+
+  - name: subdomain_assetfinder
+    tool: assetfinder
+    fanout: per_target
+
+  # Drop unresolvable names so probe_web never wastes a request.
+  - name: resolve_dns
+    tool: massdns
+    fanout: per_target
+    depends_on: [subdomain_subfinder, subdomain_assetfinder]
+
+  - name: probe_web
+    tool: httpx
+    fanout: per_target
+    depends_on: [resolve_dns]

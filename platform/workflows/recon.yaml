@@ -1,0 +1,98 @@
+# ============================================================================
+# Stage 2 - full reconnaissance workflow.
+#
+# Data flows through the findings store: each step consumes finding types
+# produced by its dependencies (declared via depends_on). The master only
+# dispatches a step once every dependency has succeeded.
+#
+# Optional heavier steps (uncomment to enable):
+#   - name: subdomain_amass
+#     tool: amass
+#     params: { timeout_min: 15 }
+#   - name: exposure_search        # requires provider-config for uncover
+#     tool: uncover
+#     params: { providers: "shodan,censys" }
+# ============================================================================
+# ============================================================================
+# Smart Automation — event-driven reconnaissance workflow.
+#
+# Routing rules encoded here (each gate saves real resources):
+#   R1  massdns drops unresolvable subdomains — httpx/naabu only ever see
+#       resolved_host values (dead domains cost zero requests).
+#   R2  naabu discovers ports; nmap -sV -sC runs ONLY on the union of ports
+#       actually found open, never a blind sweep.
+#   R3  dalfox runs ONLY when crawling produced parameterized URLs.
+#
+# Optional heavy steps (uncomment when binaries/capabilities exist):
+#   - name: subdomain_amass      (tool: amass)  params: { timeout_min: 15 }
+#   - name: exposure_search      (tool: uncover) needs provider-config
+#   - name: wpscan_sites         (tool: wpscan)  when: {has_finding_type: wordpress}
+# ============================================================================
+name: recon
+description: Event-driven enum -> DNS filter -> probe -> ports -> URLs -> vulns -> XSS.
+version: 1
+
+defaults:
+  max_attempts: 3
+
+steps:
+  - name: subdomain_subfinder
+    tool: subfinder
+    fanout: per_target
+
+  - name: subdomain_assetfinder
+    tool: assetfinder
+    fanout: per_target
+
+  # R1 — dead-domain elimination gate for everything downstream.
+  - name: resolve_dns
+    tool: massdns
+    fanout: per_target
+    depends_on: [subdomain_subfinder, subdomain_assetfinder]
+
+  - name: probe_web
+    tool: httpx
+    fanout: per_target
+    depends_on: [resolve_dns]
+
+  - name: open_ports
+    tool: naabu
+    fanout: per_target
+    depends_on: [resolve_dns]
+
+  # R2 — deep enumeration restricted to naabu's discovered port union.
+  - name: service_enum
+    tool: nmap
+    fanout: once
+    depends_on: [open_ports]
+    when:
+      has_finding_type: open_port
+
+  - name: archive_urls
+    tool: waybackurls
+    fanout: once
+    depends_on: [probe_web]
+
+  - name: crawl_urls
+    tool: katana
+    fanout: once
+    depends_on: [probe_web]
+    params:
+      depth: 3
+      concurrency: 10
+
+  - name: vulnerability_scan
+    tool: nuclei
+    fanout: once
+    depends_on: [probe_web]
+    params:
+      severity: "low,medium,high,critical"
+
+  # R3 — XSS scanning only where the crawl found parameters.
+  - name: xss_scan
+    tool: dalfox
+    fanout: once
+    depends_on: [crawl_urls]
+    when:
+      has_finding_type: url_param
+

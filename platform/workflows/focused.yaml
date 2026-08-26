@@ -1,0 +1,94 @@
+# ============================================================================
+# Stage 4 — focused scanning workflow (self-contained: includes the base
+# recon chain, then routes the expensive tools behind signals).
+#
+# Gates (cost-first):
+#   ffuf        → only after probe_web confirmed live hosts
+#   arjun       → only on api_surface (APIs first; broaden deliberately)
+#   sqlmap      → only where crawling found url_param entries.
+#                 ⚠ SAFETY: prefer human triage BEFORE this step in prod.
+#   trufflehog  → only when crawl produced .js URLs.
+#
+# Requires worker capabilities: ffuf, arjun, sqlmap, trufflehog (+ base).
+# ============================================================================
+name: focused
+description: Base recon + content discovery + param mining + SQLi + secrets.
+version: 1
+
+defaults:
+  max_attempts: 2
+
+steps:
+  - name: subdomain_subfinder
+    tool: subfinder
+    fanout: per_target
+
+  - name: resolve_dns
+    tool: massdns
+    fanout: per_target
+    depends_on: [subdomain_subfinder]
+
+  - name: probe_web
+    tool: httpx
+    fanout: per_target
+    depends_on: [resolve_dns]
+
+  # ---- Stage 4 routed steps ------------------------------------------------
+  - name: content_discovery
+    tool: ffuf
+    fanout: once
+    depends_on: [probe_web]
+    when:
+      has_finding_type: live_host
+    params:
+      threads: 20
+
+  - name: param_mining
+    tool: arjun
+    fanout: once
+    depends_on: [probe_web]
+    when:
+      has_finding_type: api_surface
+    params:
+      threads: 5
+
+  - name: crawl_urls
+    tool: katana
+    fanout: once
+    depends_on: [probe_web]
+    params:
+      depth: 2
+      concurrency: 10
+
+  - name: sqli_validation
+    tool: sqlmap
+    fanout: once
+    depends_on: [param_mining]
+    when:
+      has_finding_type: url_param
+    params:
+      level: 1
+      risk: 1
+
+  # Secrets sweep over crawled JS assets (trufflehog downloads them itself).
+  - name: js_secrets
+    tool: trufflehog
+    fanout: once
+    depends_on: [crawl_urls]
+    when:
+      has_finding_type: js_url
+    params:
+      max_files: 40
+
+  # OOB/blind-SSRF prover (Stage 4): injects interactsh collaborator hosts
+  # into crawled parameter URLs and correlates callbacks back to the exact
+  # parameter. Gated on url_param so it never runs without injectables.
+  - name: oob_ssrf_probe
+    tool: interactsh
+    fanout: once
+    depends_on: [crawl_urls]
+    when:
+      has_finding_type: url_param
+    params:
+      duration_secs: 30
+      max_urls: 25

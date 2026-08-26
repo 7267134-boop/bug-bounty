@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bug Bounty Platform — Dashboard</title>
+<style>
+  /* Deliberately dependency-free: instant load, no build step, no CDN. */
+  :root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --fg:#e6edf3;
+          --dim:#8b949e; --ok:#3fb950; --warn:#d29922; --bad:#f85149; --accent:#58a6ff; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--fg);
+         font:14px/1.45 ui-sans-serif,system-ui,Segoe UI,Roboto,sans-serif; padding:24px; }
+  h1 { font-size:18px; margin-bottom:4px; display:flex; align-items:center; gap:8px; }
+  h2 { font-size:15px; margin:22px 0 8px; color:var(--fg); }
+  .sub { color:var(--dim); font-size:12px; margin-bottom:16px; }
+  .dot { width:10px; height:10px; border-radius:50%; background:var(--dim);
+         display:inline-block; }
+  .dot.ok { background:var(--ok); box-shadow:0 0 6px var(--ok); }
+  .dot.bad { background:var(--bad); }
+  .grid { display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+          margin-bottom:20px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+          padding:12px 14px; }
+  .card .v { font-size:24px; font-weight:600; }
+  .card .k { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.05em; }
+  table { width:100%; border-collapse:collapse; background:var(--panel);
+          border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line);
+          font-size:13px; white-space:nowrap; }
+  th { color:var(--dim); font-size:11px; text-transform:uppercase; }
+  tr:last-child td { border-bottom:none; }
+  .st-completed{color:var(--ok)} .st-failed,.st-dead{color:var(--bad)}
+  .st-running,.st-queued{color:var(--warn)} .st-succeeded{color:var(--ok)}
+  #err { color:var(--bad); font-size:12px; min-height:16px; margin:8px 0; }
+  #msg { color:var(--ok); font-size:12px; min-height:16px; margin:4px 0; }
+  .sev-row { display:flex; align-items:center; gap:10px; margin:4px 0; max-width:560px; }
+  .sev-label { width:70px; font-size:12px; text-transform:uppercase; color:var(--dim); }
+  .sev-bar { height:14px; border-radius:3px; min-width:2px; }
+  .sev-n { font-size:12px; color:var(--dim); }
+  .bar-track { background:var(--bg); border:1px solid var(--line); border-radius:4px;
+               height:8px; width:120px; overflow:hidden; vertical-align:middle; }
+  .bar-fill { height:100%; background:var(--ok); }
+  .bar-fill.warn { background:var(--warn); }
+  button { cursor:pointer;border:0;border-radius:6px;padding:5px 12px;font-weight:600;
+           background:var(--accent); color:#fff; font-size:13px; }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--fg); }
+  button.okbtn { background:var(--ok); padding:2px 8px; }
+  button.badbtn { background:var(--bad); padding:2px 8px; }
+  select,input,textarea { background:var(--panel); border:1px solid var(--line);
+        color:var(--fg); border-radius:6px; padding:6px 8px; font:inherit; }
+  textarea { width:100%; min-height:56px; font-family:ui-monospace,monospace; }
+  label.fld { display:block; font-size:11px; color:var(--dim);
+              text-transform:uppercase; letter-spacing:.05em; margin:8px 0 3px; }
+  .cols { display:grid; gap:16px; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); }
+  .evfeed { font-size:12.5px; background:var(--panel); border:1px solid var(--line);
+            border-radius:8px; padding:10px 12px; }
+  .evfeed div { padding:3px 0; border-bottom:1px dashed var(--line); white-space:nowrap;
+                overflow:hidden; text-overflow:ellipsis; }
+  .evfeed div:last-child { border-bottom:none; }
+  .ev-allow{color:var(--ok)} .ev-deny{color:var(--bad)} .ev-error{color:var(--bad)}
+  .ev-info{color:var(--dim)}
+  .muted { color:var(--dim); }
+</style>
+</head>
+<body>
+<h1><span id="health" class="dot" title="readyz"></span> Bug Bounty Automation Platform</h1>
+<div class="sub">read-only operational dashboard · authorized programs only ·
+  <label style="color:var(--dim)">refresh
+    <select id="interval">
+      <option value="2000">2s</option>
+      <option value="5000" selected>5s</option>
+      <option value="15000">15s</option>
+      <option value="60000">60s</option>
+    </select></label>
+  <button class="ghost" id="pauseBtn" onclick="togglePause()">⏸ pause</button>
+</div>
+
+<label style="font-size:12px;color:var(--dim)">API token:
+  <input id="tok" type="password" placeholder="X-API-Token"
+         style="width:260px;margin:0 6px">
+</label>
+<button onclick="saveTok()">connect</button>
+<div id="err"></div>
+<div id="msg"></div>
+
+<div class="grid">
+  <div class="card"><div class="v" id="k-workers">–</div><div class="k">workers alive</div></div>
+  <div class="card"><div class="v" id="k-findings">–</div><div class="k">findings total</div></div>
+  <div class="card"><div class="v" id="k-new">–</div><div class="k">findings new</div></div>
+  <div class="card"><div class="v" id="k-unvalidated">–</div><div class="k">unvalidated</div></div>
+  <div class="card"><div class="v" id="k-scans">–</div><div class="k">scans running</div></div>
+</div>
+
+<div class="cols">
+  <div>
+    <h2>Triage backlog by severity <span class="muted">(unvalidated + new)</span></h2>
+    <div id="severity"><div class="muted">…</div></div>
+  </div>
+  <div>
+    <h2>Worker fleet</h2>
+    <table>
+      <thead><tr><th>worker</th><th>capabilities</th><th>last seen</th></tr></thead>
+      <tbody id="workers"><tr><td colspan="3" style="color:var(--dim)">…</td></tr></tbody>
+    </table>
+  </div>
+  <div>
+    <h2>Live activity <span class="muted">(audit tail)</span></h2>
+    <div class="evfeed" id="events"><div class="muted">…</div></div>
+  </div>
+</div>
+
+<h2>Launch a scan</h2>
+<div class="card" style="max-width:720px">
+  <label class="fld">workflow preset</label>
+  <select id="wf"></select>
+  <span class="muted" id="wf-desc"></span>
+  <label class="fld">targets (one per line — every line is scope-checked twice)</label>
+  <textarea id="targets" placeholder="example.com&#10;api.example.com"></textarea>
+  <label class="fld">requested by</label>
+  <input id="by" value="dashboard" style="width:240px">
+  <div style="margin-top:10px"><button onclick="launchScan()">▶ submit scan</button></div>
+</div>
+
+<h2>Scans</h2>
+<table>
+  <thead><tr><th>scan</th><th>workflow</th><th>status</th><th>progress</th>
+             <th>tasks (state:n)</th><th>requested by</th></tr></thead>
+  <tbody id="scans"><tr><td colspan="6" style="color:var(--dim)">…</td></tr></tbody>
+</table>
+
+<h2>Triage — unvalidated high/critical findings
+  <span class="sub" style="display:inline">(Pillar B: only Validated findings reach AI/reporting)</span></h2>
+<table>
+  <thead><tr><th>severity</th><th>type</th><th>value</th><th>decision</th></tr></thead>
+  <tbody id="triage"><tr><td colspan="4" style="color:var(--dim)">…</td></tr></tbody>
+</table>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const SEV_ORDER = ["critical", "high", "medium", "low", "info"];
+const tok = () => sessionStorage.getItem("bb_tok") || "";
+let paused = false, timer = null;
+
+function saveTok() { sessionStorage.setItem("bb_tok", $("tok").value.trim()); refresh(); }
+
+function relTime(iso) {
+  if (!iso || iso === "None") return "—";
+  const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+  if (s < 90) return Math.round(s) + "s ago";
+  if (s < 5400) return Math.round(s / 60) + "m ago";
+  if (s < 172800) return Math.round(s / 3600) + "h ago";
+  return Math.round(s / 86400) + "d ago";
+}
+
+function togglePause() {
+  paused = !paused;
+  $("pauseBtn").textContent = paused ? "▶ resume" : "⏸ pause";
+}
+
+function armTimer() {
+  if (timer) clearInterval(timer);
+  timer = setInterval(() => { if (!paused) refresh(); }, Number($("interval").value));
+}
+$("interval").onchange = armTimer;
+
+async function api(path, method = "GET", body) {
+  const res = await fetch(path, {
+    method,
+    headers: { "X-API-Token": tok(),
+               ...(body ? { "Content-Type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.detail ? JSON.stringify(data.detail) : `HTTP ${res.status}`);
+  }
+  return data;
+}
+
+async function health() {
+  try {
+    const h = await fetch("/readyz").then(r => r.json());
+    $("health").className = "dot " + (h.status === "ok" ? "ok" : "bad");
+    $("health").title = `postgres:${h.postgres} redis:${h.redis}`;
+  } catch (_) { $("health").className = "dot bad"; }
+}
+
+async function launchScan() {
+  $("msg").textContent = ""; $("err").textContent = "";
+  const targets = $("targets").value.split("\n").map(t => t.trim()).filter(Boolean);
+  if (!targets.length) { $("err").textContent = "enter at least one target"; return; }
+  try {
+    const res = await api("/api/v1/scans", "POST", {
+      program: sessionStorage.getItem("bb_program") || "demo",
+      workflow: $("wf").value,
+      targets, requested_by: $("by").value.trim() || "dashboard",
+    });
+    const denied = (res.decisions || []).filter(d => !d.allowed);
+    $("msg").textContent =
+      `scan ${res.scan_id.slice(0, 8)}… accepted · ${res.tasks_enqueued} task(s)` +
+      (denied.length ? ` · ${denied.length} target(s) OUT OF SCOPE and skipped` : "");
+  } catch (e) { $("err").textContent = "submit failed: " + e.message; }
+}
+
+async function triage(findingId, decision) {
+  try {
+    await api(`/api/v1/findings/${findingId}/triage`, "PATCH",
+              { decision, note: "", requested_by: "dashboard" });
+    refresh();
+  } catch (e) { $("err").textContent = "triage failed: " + e.message; }
+}
+
+async function loadWorkflows() {
+  if ($("wf").options.length) return;
+  try {
+    const data = await api("/api/v1/workflows");
+    for (const w of data.workflows || []) {
+      const o = document.createElement("option");
+      o.value = w; o.textContent = w; $("wf").appendChild(o);
+    }
+  } catch (_) { /* token not set yet */ }
+}
+
+function renderSeverity(histo) {
+  if (!histo || !Object.keys(histo).length) {
+    $("severity").innerHTML = '<div class="muted">empty backlog ✔</div>'; return;
+  }
+  const max = Math.max(...SEV_ORDER.map(s => histo[s] || 0), 1);
+  $("severity").innerHTML = SEV_ORDER.filter(s => histo[s]).map(s =>
+    `<div class="sev-row"><span class="st-${s} sev-label">${s}</span>` +
+    `<div class="sev-bar" style="background:var(--${s === 'critical' ? 'crit' : s});` +
+    `width:${Math.round(100 * histo[s] / max)}%"></div>` +
+    `<span class="sev-n">${histo[s]}</span></div>`).join("");
+}
+
+function renderWorkers(workers) {
+  $("workers").innerHTML = (workers || []).map(w =>
+    `<tr><td>${w.worker_id}</td><td class="muted"` +
+    ` style="max-width:280px;overflow:hidden;text-overflow:ellipsis">` +
+    `${(w.capabilities || []).join(", ")}</td>` +
+    `<td>${relTime(w.last_seen)}</td></tr>`).join("") ||
+    `<tr><td colspan="3" style="color:var(--dim)">no live workers</td></tr>`;
+}
+
+function renderEvents(events) {
+  $("events").innerHTML = (events || []).map(e =>
+    `<div><span class="ev-${e.decision}">${e.action}</span>` +
+    ` <span class="muted">${String(e.subject || "").slice(0, 8)}</span>` +
+    ` <span class="muted">· ${e.actor} · ${relTime(e.ts)}</span></div>`).join("") ||
+    `<div class="muted">no events yet</div>`;
+}
+
+async function refresh() {
+  if (!tok()) { $("err").textContent = "enter API token to connect"; loadWorkflows(); return; }
+  try {
+    const [data] = await Promise.all([api("/api/v1/dashboard"), loadWorkflows()]);
+    $("err").textContent = "";
+    const m = data.metrics;
+    $("k-workers").textContent = m.workers_alive;
+    $("k-findings").textContent = m.findings_total;
+    $("k-new").textContent = m.findings_new;
+    $("k-unvalidated").textContent = m.findings_unvalidated;
+    $("k-scans").textContent = m.scans.running || 0;
+
+    renderSeverity(data.severity);
+    renderEvents(data.events);
+
+    $("scans").innerHTML = data.scans.map(s => {
+      const states = Object.entries(s.task_states || {});
+      const done = states
+        .filter(([k]) => ["succeeded", "failed", "dead", "aborted"].includes(k))
+        .reduce((a, [, v]) => a + v, 0);
+      const total = states.reduce((a, [, v]) => a + v, 0);
+      const pct = total ? Math.round(100 * done / total) : 0;
+      const chips = states
+        .map(([k, v]) => `<span class="st-${k}">${k}:${v}</span>`).join(" ") || "—";
+      return `<tr><td title="${s.scan_id}">${s.scan_id.slice(0, 8)}…</td>` +
+             `<td>${s.workflow}</td><td class="st-${s.status}">${s.status}</td>` +
+             `<td><div class="bar-track"><div class="bar-fill ${pct < 100 ? 'warn' : ''}" ` +
+             `style="width:${pct}%"></div></div> ${pct}%</td>` +
+             `<td>${chips}</td><td>${s.requested_by}</td></tr>`;
+    }).join("") || `<tr><td colspan="6" style="color:var(--dim)">no scans yet</td></tr>`;
+
+    let triageRows = `<tr><td colspan="4" style="color:var(--dim)">none waiting</td></tr>`;
+    try {
+      const f = await api("/api/v1/findings?state=unvalidated&severity=critical,high&is_new=true&limit=10");
+      triageRows = (f.findings || []).map(x =>
+        `<tr><td class="st-${x.severity || 'info'}">${x.severity || '?'}</td>` +
+        `<td>${x.type}</td><td style="max-width:420px;overflow:hidden;text-overflow:ellipsis">${x.value}</td>` +
+        `<td><button class="okbtn" onclick="triage('${x.id}','validated')">✔</button> ` +
+        `<button class="badbtn" onclick="triage('${x.id}','refuted')">✘</button></td></tr>`
+      ).join("") || triageRows;
+    } catch (_) { /* findings feed optional */ }
+    $("triage").innerHTML = triageRows;
+
+    try {
+      const w = await api("/api/v1/workers");
+      renderWorkers(w.workers);
+    } catch (_) { /* workers feed optional */ }
+  } catch (e) {
+    $("err").textContent = "refresh failed: " + e.message;
+  }
+}
+health();
+armTimer();
+refresh();
+</script>
+</body>
+</html>

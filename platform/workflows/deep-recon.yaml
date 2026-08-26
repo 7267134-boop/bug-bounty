@@ -1,0 +1,106 @@
+# ============================================================================
+# Stage 3 — deep recon: the full event-driven chain PLUS decision-engine
+# routed steps (bypass403 / wpscan / corsy).
+#
+# Requires worker capabilities: routing.bypass403, wpscan, corsy
+# and the binaries wpscan + corsy installed in the worker image.
+#
+# Routing rules:
+#   R1  massdns drops unresolvable subdomains before any probing.
+#   R2  nmap -sV -sC only on naabu's discovered port union.
+#   R3  dalfox only on crawled parameterized URLs.
+#   R4  bypass403 only on URLs that answered 401/403.
+#   R5  wpscan only on hosts fingerprinted as WordPress.
+#   R6  corsy only on discovered API surfaces.
+# ============================================================================
+name: deep-recon
+description: Full recon chain + decision-engine routed focused checks.
+version: 1
+
+defaults:
+  max_attempts: 3
+
+steps:
+  - name: subdomain_subfinder
+    tool: subfinder
+    fanout: per_target
+
+  - name: subdomain_assetfinder
+    tool: assetfinder
+    fanout: per_target
+
+  - name: resolve_dns
+    tool: massdns
+    fanout: per_target
+    depends_on: [subdomain_subfinder, subdomain_assetfinder]
+
+  - name: probe_web
+    tool: httpx
+    fanout: per_target
+    depends_on: [resolve_dns]
+
+  - name: open_ports
+    tool: naabu
+    fanout: per_target
+    depends_on: [resolve_dns]
+
+  - name: service_enum
+    tool: nmap
+    fanout: once
+    depends_on: [open_ports]
+    when:
+      has_finding_type: open_port
+
+  - name: archive_urls
+    tool: waybackurls
+    fanout: once
+    depends_on: [probe_web]
+
+  - name: crawl_urls
+    tool: katana
+    fanout: once
+    depends_on: [probe_web]
+    params:
+      depth: 3
+      concurrency: 10
+
+  - name: vulnerability_scan
+    tool: nuclei
+    fanout: once
+    depends_on: [probe_web]
+    params:
+      severity: "low,medium,high,critical"
+
+  - name: xss_scan
+    tool: dalfox
+    fanout: once
+    depends_on: [crawl_urls]
+    when:
+      has_finding_type: url_param
+
+  # ---- Stage 3 decision-engine routes -------------------------------------
+  # R4 — prove/disprove access control on blocked endpoints.
+  - name: bypass403_check
+    tool: routing.bypass403
+    fanout: once
+    depends_on: [probe_web]
+    when:
+      has_finding_type: http_403
+
+  # R5 — CMS-specific enumeration on fingerprinted WordPress hosts.
+  - name: wpscan_sites
+    tool: wpscan
+    fanout: once
+    depends_on: [probe_web]
+    when:
+      has_finding_type: wordpress
+    params:
+      max_urls: 10
+
+  # R6 — CORS misconfiguration on API surfaces.
+  - name: cors_scan
+    tool: corsy
+    fanout: once
+    depends_on: [probe_web]
+    when:
+      has_finding_type: api_surface

@@ -1,0 +1,14 @@
+{
+  "target_domain": "example.com",
+  "enabled_tools": ["all"],
+  "max_retries": 3,
+  "tool_timeout_sec": 3600,
+  "retry_delay_sec": 2.0,
+  "verbosity": "high",
+  "output_dir": "./reports",
+  "concurrency": 3,
+  "extra_args": {
+    "nmap": [],
+    "nuclei": ["-severity", "low,medium,high,critical"]
+  }
+}

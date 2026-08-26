@@ -1,0 +1,37 @@
+# ============================================================================
+# Stage 1 smoke workflow.
+#
+# Proves the full pipeline (master auth -> scope gate -> queue -> worker
+# capability gate -> sandboxed execution -> state persistence -> finalize)
+# without touching any external system.
+#
+# Stage 2 will add real recon steps, e.g.:
+#   - name: subdomains
+#     tool: subfinder          # registered in stage 2
+#     fanout: per_target
+#   - name: live_hosts
+#     tool: httpx
+#     depends_on: [subdomains]
+# ============================================================================
+name: smoke
+description: End-to-end pipeline validation with zero side effects.
+version: 1
+
+defaults:
+  max_attempts: 3
+
+steps:
+  - name: pipeline_echo
+    tool: builtin.noop
+    fanout: per_target
+    params:
+      message: "stage1-ok"
+
+  # Exercises dependency-aware scheduling (Osmedeus-style): this step is
+  # only dispatched after every pipeline_echo task has succeeded.
+  - name: summary_echo
+    tool: builtin.noop
+    fanout: once
+    depends_on: [pipeline_echo]
+    params:
+      message: "stage1-deps-ok"
